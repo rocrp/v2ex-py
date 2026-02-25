@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import html
+import json
 import re
+from dataclasses import asdict
 from datetime import datetime, timezone
+from typing import Any, Callable
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -10,7 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from v2ex.models import Member, Node, Notification, Reply, Token, Topic
+from v2ex.models import Member, Node, Notification, OutputFormat, Reply, Token, Topic
 
 console = Console()
 
@@ -38,6 +41,18 @@ def _relative_time(ts: int) -> str:
 def _strip_html(text: str) -> str:
     text = html.unescape(text)
     return re.sub(r"<[^>]+>", "", text)
+
+
+def _to_dict(obj: Any) -> Any:
+    """Convert dataclass (or list of dataclasses) to plain dicts for JSON."""
+    if isinstance(obj, list):
+        return [asdict(item) for item in obj]
+    return asdict(obj)
+
+
+# ---------------------------------------------------------------------------
+# Rich formatters (existing)
+# ---------------------------------------------------------------------------
 
 
 def print_topics(topics: list[Topic], *, title: str = "Topics") -> None:
@@ -145,3 +160,127 @@ def print_node(node: Node) -> None:
     if node.header:
         table.add_row("Header", _strip_html(node.header))
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Markdown formatters
+# ---------------------------------------------------------------------------
+
+
+def md_topics(topics: list[Topic], *, title: str = "Topics") -> str:
+    lines = [f"# {title}", "", "| ID | Title | Node | Author | Replies | Time |"]
+    lines.append("| ---: | --- | --- | --- | ---: | --- |")
+    for t in topics:
+        node_name = t.node.title if t.node else ""
+        author = t.member.username if t.member else ""
+        lines.append(
+            f"| {t.id} | {t.title} | {node_name} | {author} | {t.replies} | {_relative_time(t.created)} |"
+        )
+    return "\n".join(lines)
+
+
+def md_topic_detail(topic: Topic, replies: list[Reply]) -> str:
+    author = topic.member.username if topic.member else "?"
+    node_name = topic.node.title if topic.node else ""
+    lines = [
+        f"# {topic.title}",
+        f"*{author} · {node_name} · {_relative_time(topic.created)} · {topic.replies} replies*",
+        "",
+    ]
+    if topic.content:
+        lines.append(topic.content)
+        lines.append("")
+    if replies:
+        lines.append(f"## Replies ({len(replies)})")
+        lines.append("")
+        for i, r in enumerate(replies, 1):
+            r_author = r.member.username if r.member else "?"
+            lines.append(f"**#{i} {r_author}** *{_relative_time(r.created)}*")
+            if r.content:
+                lines.append(r.content)
+            lines.append("")
+    return "\n".join(lines)
+
+
+def md_notifications(notifications: list[Notification]) -> str:
+    if not notifications:
+        return "No notifications."
+    lines = ["# Notifications", "", "| ID | From | Content | Time |"]
+    lines.append("| ---: | --- | --- | --- |")
+    for n in notifications:
+        who = n.member.username if n.member else str(n.member_id)
+        text = _strip_html(n.payload_rendered) if n.payload_rendered else n.text
+        # Escape pipes in content for markdown table
+        text = text.replace("|", "\\|")
+        lines.append(f"| {n.id} | {who} | {text} | {_relative_time(n.created)} |")
+    return "\n".join(lines)
+
+
+def md_token(token: Token) -> str:
+    masked = token.token[:8] + "..." + token.token[-4:] if len(token.token) > 12 else token.token
+    return "\n".join(
+        [
+            "# Token Info",
+            "",
+            f"- **Token**: {masked}",
+            f"- **Scope**: {token.scope.value}",
+            f"- **Good for**: {token.good_for_days} days",
+            f"- **Total used**: {token.total_used}",
+            f"- **Last used**: {_relative_time(token.last_used)}",
+            f"- **Created**: {_relative_time(token.created)}",
+            f"- **Expiration**: {_relative_time(token.expiration)}",
+        ]
+    )
+
+
+def md_member(member: Member) -> str:
+    lines = [
+        f"# Member: {member.username}",
+        "",
+        f"- **ID**: {member.id}",
+        f"- **Username**: {member.username}",
+    ]
+    if member.bio:
+        lines.append(f"- **Bio**: {member.bio}")
+    if member.website:
+        lines.append(f"- **Website**: {member.website}")
+    if member.github:
+        lines.append(f"- **GitHub**: {member.github}")
+    lines.append(f"- **Joined**: {_relative_time(member.created)}")
+    return "\n".join(lines)
+
+
+def md_node(node: Node) -> str:
+    lines = [
+        f"# Node: {node.title}",
+        "",
+        f"- **Name**: {node.name}",
+        f"- **Title**: {node.title}",
+        f"- **Topics**: {node.topics}",
+    ]
+    if node.header:
+        lines.append(f"- **Header**: {_strip_html(node.header)}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Output dispatcher
+# ---------------------------------------------------------------------------
+
+
+def output(
+    data: Any,
+    fmt: OutputFormat,
+    *,
+    rich_fn: Callable[..., None],
+    md_fn: Callable[..., str],
+    rich_kwargs: dict[str, Any] | None = None,
+    md_kwargs: dict[str, Any] | None = None,
+) -> None:
+    """Route output to rich table, JSON, or markdown based on format."""
+    if fmt == OutputFormat.JSON:
+        print(json.dumps(_to_dict(data), ensure_ascii=False, indent=2))
+    elif fmt == OutputFormat.MARKDOWN:
+        print(md_fn(data, **(md_kwargs or {})))
+    else:
+        rich_fn(data, **(rich_kwargs or {}))

@@ -9,6 +9,12 @@ class Scope(StrEnum):
     REGULAR = "regular"
 
 
+class OutputFormat(StrEnum):
+    RICH = "rich"
+    JSON = "json"
+    MARKDOWN = "markdown"
+
+
 @dataclass(slots=True)
 class Member:
     id: int
